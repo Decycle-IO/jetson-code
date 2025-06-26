@@ -6,6 +6,21 @@ import binascii # To print byte arrays nicely
 # --- If you want to use ndeflib to parse the raw NDEF bytes later ---
 import ndef # From 'pip install ndeflib'
 
+import urllib.parse
+from eth_utils import keccak, to_checksum_address
+
+def public_key_to_eth_address(pubkey_hex: str) -> str:
+    """
+    Convert an uncompressed public key (hex string starting with 04) to Ethereum address.
+    """
+    if not pubkey_hex.startswith('04') or len(pubkey_hex) != 130:
+        raise ValueError("Invalid uncompressed public key format.")
+
+    pubkey_bytes = bytes.fromhex(pubkey_hex[2:])  # Skip '04' prefix
+    keccak_digest = keccak(pubkey_bytes)
+    address = keccak_digest[-20:]  # Last 20 bytes
+    return to_checksum_address('0x' + address.hex())
+
 def on_connect_apdu(tag):
     print(f"[-] Card connected: {tag}")
     if not isinstance(tag, nfc.tag.tt4.Type4ATag):
@@ -279,6 +294,16 @@ def main_apdu_reader():
 
 def process_uri(uri):
     print(uri)
+    try:
+        parsed = urllib.parse.urlparse(uri)
+        qs = urllib.parse.parse_qs(parsed.query)
+        pk1 = qs.get('pk1', [None])[0]
+        if pk1:
+            eth_addr = public_key_to_eth_address(pk1)
+            print(f"        [*] Ethereum Address: {eth_addr}")
+    except Exception as e:
+        print(f"        [!] Error parsing URL or extracting pk1: {e}")
 
 if __name__ == "__main__":
     main_apdu_reader()
+    # process_uri("https://nfc.ethglobal.com/?av=A02.03.000158.1F49A48B&v=01.G1.000050.C8FDEE3B&pk1=046576D3E06AB6BFD7EDB5558A2F81AA4532BC1ABDB27B4214AC73235B38DB7E0AE1B5CD794FE4F7CE7E2F8EC873E304F3AFFDB40EBB32D41A55323F6A4230D41C&latch1=8B199DFBCA95DAE8DF98146C9F170A7F29E30E7BC1BCED6BB69A58AE9401ED41&cmd=0000&res=00")
