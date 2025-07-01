@@ -1,7 +1,7 @@
 import time
 import traceback
 
-from NFCReaderETH import NFCReaderETH
+from nfc_reader_eth import NFCReaderETH
 
 def main():
     def my_custom_eth_processor(eth_address, public_key, uri):
@@ -9,7 +9,8 @@ def main():
         This is the callback function that gets executed when an Ethereum address is found.
         """
         print(eth_address)
-        # You can add more logic here, e.g., send to a server, update UI, etc.
+        # Send command to open the door
+        # Start processing the webcam with computer vision
 
     # Initialize the reader with your callback
     # You can specify the reader path if not 'usb', e.g., 'tty:AMA0' for Raspberry Pi GPIO
