@@ -21,9 +21,9 @@ class ImageProcessor:
 
     def __init__(
         self,
-        process_waste_callback: Callable[[Dict[str, Any]], None],
         custom_model_path: Path,
         custom_classes_path: Path,
+        process_waste_callback: Callable[[Dict[str, Any]], None] = None, # Made optional
         yolo_model_name: str = "yolov8m.pt",
         target_classes: List[str] = None,
         yolo_confidence_threshold: float = 0.05,
@@ -33,12 +33,11 @@ class ImageProcessor:
     ):
         """
         Initializes the ImageProcessor.
-
         Args:
-            process_waste_callback (Callable): Function to call when a trigger condition is met.
-                It receives a dictionary with detection details.
             custom_model_path (Path): Path to the custom .pt model file.
             custom_classes_path (Path): Path to the JSON file with custom class names.
+            process_waste_callback (Callable, optional): Function to call when a trigger condition is met.
+                                                         Defaults to None.
             yolo_model_name (str): The name of the YOLOv8 model to use.
             target_classes (List[str]): YOLO classes that should be further processed by the custom model.
                                         Defaults to ['bottle', 'cup'].
@@ -79,12 +78,6 @@ class ImageProcessor:
         """Loads the custom PyTorch model."""
         if not model_path.exists():
             raise FileNotFoundError(f"Custom model not found at {model_path}")
-        # When loading a model for inference, it's common to load the state_dict.
-        # If your .pt file is the entire model, use torch.load(model_path).
-        # We assume it's a state_dict for this example.
-        # For a full runnable example, we will create a dummy model and save its state_dict.
-        # In a real scenario, you might need a model definition class.
-        # For this example, we'll handle this in the `if __name__ == '__main__'` block.
         self.custom_model = torch.load(model_path, map_location=self.device)
         self.custom_model.eval()
         print(f"Custom model loaded from {model_path} and set to evaluation mode.")
@@ -95,41 +88,37 @@ class ImageProcessor:
             raise FileNotFoundError(f"Classes JSON not found at {path}")
         with open(path, 'r') as f:
             return json.load(f)
-
-    def process_frame(self, frame: Frame) -> Frame:
+            
+    def process_single_image(self, frame: Frame) -> Dict[str, Any]:
         """
-        Processes a single frame for object detection and classification.
+        Processes a single image and returns the annotated image and detected classes.
+        This method is designed for single-shot API calls, without video stream logic.
 
         Args:
-            frame (Frame): The input image/frame as a NumPy array.
+            frame (Frame): The input image as a NumPy array.
 
         Returns:
-            Frame: The frame with bounding boxes and labels drawn on it.
+            Dict[str, Any]: A dictionary containing:
+                            - "annotated_frame": The frame with drawn bounding boxes (np.ndarray).
+                            - "detected_classes": A list of custom class names detected.
         """
         annotated_frame = frame.copy()
-        yolo_results = self.yolo_model(frame, verbose=True)
+        yolo_results = self.yolo_model(frame, verbose=False) # Quieter for API use
         
-        found_target_this_frame = False
-        best_target_details = None
+        detected_custom_classes = []
 
         for result in yolo_results:
             for box in result.boxes:
-                # --- Primary YOLO Detection ---
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])
                 cls_id = int(box.cls[0])
                 cls_name = self.yolo_names[cls_id]
 
-                # --- Secondary Custom Classification ---
                 if cls_name in self.target_classes and conf >= self.yolo_conf_thresh:
-                    # Crop the object from the original frame
                     crop = frame[y1:y2, x1:x2]
-                    
-                    # Ensure crop is not empty
                     if crop.size == 0:
                         continue
 
-                    # Preprocess and classify with the custom model
                     input_tensor = self.custom_model_transform(crop).unsqueeze(0).to(self.device)
                     
                     with torch.no_grad():
@@ -138,67 +127,71 @@ class ImageProcessor:
                         custom_conf, predicted_idx = torch.max(probabilities, 1)
                     
                     custom_conf = float(custom_conf[0])
-                    custom_cls_name = self.custom_classes[predicted_idx[0]]
-
-                    # Update label to show custom classification
-                    label = f"{custom_cls_name}: {custom_conf:.2f}"
                     
-                    # --- Hysteresis / Trigger Logic ---
+                    label = f"Analyzing..." # Default label
                     if custom_conf >= self.custom_conf_thresh:
-                        found_target_this_frame = True
-                        current_detection = {
-                            "waste_type": custom_cls_name,
-                            "confidence": custom_conf,
-                            "bounding_box": (x1, y1, x2, y2)
-                        }
-                        # Keep track of the best detection in this frame
-                        if best_target_details is None or custom_conf > best_target_details['confidence']:
-                             best_target_details = current_detection
-                             
-                    # --- Annotation ---
+                        custom_cls_name = self.custom_classes[predicted_idx[0]]
+                        detected_custom_classes.append(custom_cls_name)
+                        label = f"{custom_cls_name}: {custom_conf:.2f}"
+                    else:
+                        label = f"{cls_name} (Low Conf)"
+
+                    # Annotation
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.putText(annotated_frame, label, (x1, y1 - 10), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                # else:
-                #     label = f"{cls_name}: {conf:.2f}"
 
-        # Update trigger counter after processing all objects in the frame
+        # Remove duplicates
+        unique_detected_classes = sorted(list(set(detected_custom_classes)))
+
+        return {
+            "annotated_frame": annotated_frame,
+            "detected_classes": unique_detected_classes
+        }
+
+
+    def process_frame(self, frame: Frame) -> Frame:
+        """
+        Processes a single frame for object detection and classification (for video stream).
+        """
+        # This now uses the single image processor and adds the trigger logic on top
+        result_dict = self.process_single_image(frame)
+        annotated_frame = result_dict["annotated_frame"]
+        
+        # --- Hysteresis / Trigger Logic ---
+        found_target_this_frame = bool(result_dict["detected_classes"])
+
+        # TODO: implement this feature in the frontend
         if found_target_this_frame:
             self.trigger_consecutive_frames += 1
-            self.last_triggered_details = best_target_details
+            # Note: For simplicity, we are not storing `last_triggered_details` here.
+            # This would need to be re-integrated if you mix API and video use cases.
         else:
             self.trigger_consecutive_frames = 0 # Reset if no target found
         
         # Check if the trigger condition is met
         if self.trigger_consecutive_frames >= self.trigger_frame_count:
             print(f"TRIGGER MET! Detected for {self.trigger_consecutive_frames} consecutive frames.")
-            if self.process_waste_callback and self.last_triggered_details:
-                self.process_waste_callback(self.last_triggered_details)
+            if self.process_waste_callback:
+                # We can pass the detected classes as details
+                self.process_waste_callback({"waste_types": result_dict["detected_classes"]})
             
             # Reset after triggering to avoid continuous calls
             self.trigger_consecutive_frames = 0
-            self.last_triggered_details = None
 
-        # Save the final annotated image
-        # cv2.imshow("det", annotated_frame)
-        cv2.imwrite("/tmp/detection.png", annotated_frame)
-        
         return annotated_frame
 
-# ==============================================================================
-# ======================== SAMPLE USAGE EXAMPLE ================================
-# ==============================================================================
 
-if __name__ == '__main__':
-    
+# The __main__ block remains the same for your local testing
+if __name__ == '__main__':    
     # --- 1. Define the Callback Function ---
     # This is the function that will be called when the trigger conditions are met.
     def my_waste_processing_function(details: Dict[str, Any]):
         """A sample callback to process detected waste."""
         print("\n--- ACTION TRIGGERED ---")
-        print(f"Processing waste of type: {details['waste_type']}")
-        print(f"Confidence: {details['confidence']:.2f}")
-        print(f"Location (bbox): {details['bounding_box']}")
+        print(f"Processing waste of type: {details['waste_types']}")
+        # print(f"Confidence: {details['confidence']:.2f}")
+        # print(f"Location (bbox): {details['bounding_box']}")
         print("------------------------\n")
 
     # --- 2. Create Dummy Files for a Self-Contained Example ---
@@ -244,7 +237,7 @@ if __name__ == '__main__':
     # We will set `target_classes` to `['bench']` to make this example work out-of-the-box.
     # In a real scenario with a bottle, you'd use `['bottle']`.
     processor = ImageProcessor(
-        process_waste_callback=my_waste_processing_function,
+        process_waste_callback=None,
         custom_model_path=custom_model_path,
         custom_classes_path=classes_path,
         target_classes=['bottle', 'cup'], # Adjusted for our dummy image

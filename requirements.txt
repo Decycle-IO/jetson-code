@@ -8,3 +8,6 @@ opencv-python
 numpy
 nfcpy==1.0.4
 ndeflib==0.3.3
+fastapi
+uvicorn
+python-multipart
