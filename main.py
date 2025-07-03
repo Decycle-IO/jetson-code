@@ -35,7 +35,7 @@ def capture_and_detect(api_url="http://localhost:8000/processImage", camera_inde
 def my_custom_eth_processor(eth_address, public_key, uri):
     print(eth_address)
     # 1. Open the magnetic lock (door)
-    send_arduino_command(3)
+    #send_arduino_command(3)
     # 2. Capture and detect object
     detected = capture_and_detect()
     # 3. Send bucket command based on detection
