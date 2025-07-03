@@ -11,3 +11,4 @@ ndeflib==0.3.3
 fastapi
 uvicorn
 python-multipart
+eth-hash[pycryptodome]
